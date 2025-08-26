@@ -1,65 +1,88 @@
 # Import required libraries
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Load dataset
+# Load & clean data
 df = pd.read_csv("superstore_cleaned_dataset.csv")
 
-# Convert Order_Date column to datetime format
-df['Order_Date'] = pd.to_datetime(df['Order_Date'], format="%d-%m-%Y", errors='coerce')
+df['Order_Date'] = pd.to_datetime(df['Order_Date'],dayfirst=True, errors='coerce')
+df['Profit_Margin'] = df['Profit'] / df['Sales'] * 100
+df['Inventory_Days'] = (df['Quantity'] / df['Sales']) * 30 
 
-# Reformat date back to string (DD-MM-YYYY)
-df['Order_Date'] = df['Order_Date'].dt.strftime("%d-%m-%Y")
-
-# Create new calculated columns
-df['Profit_Margin'] = df['Profit'] / df['Sales'] * 100   # Profit margin in percentage
-df['Inventory_Days'] = (df['Quantity'] / df['Sales']) * 30  # Approx inventory days
-
-
-# Correlation Heatmap
+# Correlation: Inventory vs Profitability
 corr_matrix = df[['Inventory_Days','Profit','Profit_Margin']].corr()
 sns.heatmap(corr_matrix, annot=True, cmap="Reds")
 plt.title("Correlation: Inventory Days vs Profitability")
 plt.show()
 
-# Quarterly Sales & Profit Trends
+# Inventory Optimization (Slow-Moving & Overstocked)
+df['Slow_Moving'] = df['Inventory_Days'] > df['Inventory_Days'].quantile(0.90)  
+df['Overstocked'] = df['Quantity'] > df['Quantity'].quantile(0.75)
 
-# Convert Order_Date again to proper datetime for grouping
-df['Order_Date'] = pd.to_datetime(df['Order_Date'], dayfirst=True)
-monthly = df.groupby(pd.Grouper(key='Order_Date', freq='QE'))[['Sales','Profit']].sum().reset_index()
+df['Action_Recommended'] = np.select(
+    [
+        (df['Slow_Moving']) & (df['Profit'] < 0),   # Slow-Moving Loss
+        (df['Slow_Moving']) & (df['Profit'] >= 0),  # Slow-Moving Profit
+        (df['Overstocked']) & (df['Profit'] < 0),   # Overstocked Loss
+        (df['Overstocked']) & (df['Profit'] >= 0)   # Overstocked Profit
+    ],
+    [
+        'Phase Out (with Discounting)',  
+        'Bundle Promotions',
+        'Liquidate Inventory',
+        'Run Clearance Promotions'
+    ],
+    default='No Action Needed'
+)
 
-# Sales trend over time
-plt.figure(figsize=(12,6))
-plt.subplot(2,1,1)  
-sns.lineplot(data=monthly, x="Order_Date", y="Sales", color="blue")
-plt.title("Sales Trend Over Time")
-plt.ylabel("Sales")
+# Export actionable product list
+df_actions = df[df['Action_Recommended'] != 'No Action'][
+    ['Product_Name','Category','Sub_Category','Inventory_Days','Profit','Action_Recommended']
+]
+df_actions.to_csv("actionable_products.csv", index=False)
 
-# Profit trend over time
-plt.subplot(2,1,2)   
-sns.lineplot(data=monthly, x="Order_Date", y="Profit", color="orange")
-plt.title("Profit Trend Over Time")
-plt.ylabel("Profit")
-plt.tight_layout()
+# Top 10 slow-moving products
+slow_moving_details = (
+    df.groupby(['Category','Sub_Category','Product_Name'])['Inventory_Days']
+      .mean()
+      .reset_index()
+      .sort_values('Inventory_Days', ascending=False)
+      .head(10)
+)
+
+plt.figure(figsize=(10,6))
+sns.barplot(x="Inventory_Days", y="Product_Name", hue="Product_Name",data=slow_moving_details,
+            palette="Reds_r", dodge=False, legend=False)
+plt.title("Top 10 Slow-Moving Products")
+plt.xlabel("Average Inventory Days")
+plt.ylabel("Product Name")
 plt.show()
 
-# Discount vs Profit Margin (by Category)
-sns.scatterplot(x="Discount", y="Profit_Margin", hue="Category", data=df)
-plt.title("Discount vs Profit Margin by Category")
+# Seasonal Profitability
+def get_season(date):
+    m = date.month
+    if m in [12, 1, 2]:
+        return 'Winter'
+    elif m in [3, 4, 5]:
+        return 'Spring'
+    elif m in [6, 7, 8]:
+        return 'Summer'
+    else:
+        return 'Fall'
+
+df['Season'] = df['Order_Date'].apply(get_season)
+seasonal = df.groupby(['Season', 'Category'])['Profit'].sum().reset_index()
+
+sns.barplot(data=seasonal, x='Season', y='Profit', hue='Category')
+plt.title("Seasonal Profitability by Category")
 plt.show()
 
-# Profit Heatmap (Category vs Sub-Category)
-plt.figure(figsize=(12,6))
-pivot = df.pivot_table(values="Profit", index="Category", columns='Sub_Category', aggfunc="sum")
-sns.heatmap(pivot, annot=True, fmt=".0f", cmap="RdYlGn")
-plt.title("Profit Heatmap by Category & Sub_category")
-plt.show()
+# Final Export
+df.to_csv('retail_analysis_output.csv', index=False)
 
-# Pareto Analysis (80/20 Rule)
-df_sorted = df.groupby('Product_Name')['Profit'].sum().sort_values(ascending=False).reset_index()
-df_sorted['Cumulative_profit'] = df_sorted['Profit'].cumsum() / df_sorted['Profit'].sum() * 100
-sns.lineplot(x=range(len(df_sorted)), y="Cumulative_profit", data=df_sorted)
-plt.axhline(80, color='red', linestyle='--')
-plt.title("Pareto Analysis (80/20 Rule)")
-plt.show()
+# Recommendations
+# Phase out or discount loss-making slow-moving products; bundle profitable ones to improve turnover.
+# Liquidate or clear overstocked items (profitable or not) to free up working capital and reduce storage costs.
+# Focus seasonal strategies: boost profitable categories in peak seasons, and control losses in weak seasons.
